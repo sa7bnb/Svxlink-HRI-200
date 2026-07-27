@@ -1,0 +1,48 @@
+[Unit]
+Description=HRI-200 interface daemon for SvxLink
+Documentation=https://github.com/<you>/hri200-parrot
+
+# svxlink owns the PTYs, so it should normally come up first. This is a
+# preference, not a requirement: hri200d waits for the symlinks to appear and
+# reconnects on its own if svxlink is restarted underneath it.
+After=svxlink.service
+Wants=svxlink.service
+
+# Do not start before the box has enumerated.
+After=dev-ttyACM0.device
+BindsTo=dev-ttyACM0.device
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/default/hri200d
+ExecStart=/usr/local/bin/hri200d.py --freq ${FREQ} --port ${PORT} $OPTS
+
+# Same user svxlink runs as, so the PTY symlinks it creates are readable.
+# dialout is needed for /dev/ttyACM0. No audio group required - this daemon
+# never touches the sound card.
+User=svxlink
+Group=svxlink
+SupplementaryGroups=dialout
+
+Restart=always
+RestartSec=5
+
+# If the daemon dies the HRI-200 drops PTT by itself within about a second,
+# because PTT is held by the poll rather than latched. A restart loop cannot
+# leave the transmitter keyed.
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+NoNewPrivileges=true
+ProtectHome=true
+
+# Must stay false. With a private /tmp namespace this daemon and svxlink would
+# each see a different /dev/shm on some systemd versions, and the PTY symlinks
+# would never line up.
+PrivateTmp=false
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
