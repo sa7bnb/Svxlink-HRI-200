@@ -211,7 +211,6 @@ only makes the node deaf.
 - Decode the remaining fields in the frequency frame — modulation mode, power
   level and channel step appear to be in there
 - Test with other radios. An FT-7800R is next
-- Upstream the `PttPty` destructor fix
 
 ---
 
