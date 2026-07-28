@@ -209,7 +209,7 @@ only makes the node deaf.
 ## Roadmap
 
 - Decode the remaining fields in the frequency frame — modulation mode, power
-  level and channel step appear to be in there
+  level and channel step appear to be in there (Fixed 20260728)
 - Test with other radios. An FT-7800R is next
 
 ---
