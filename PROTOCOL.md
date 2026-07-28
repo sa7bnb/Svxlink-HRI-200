@@ -9,8 +9,9 @@ The protocol was previously noted as unknown in
 [sm0svx/svxlink issue #111](https://github.com/sm0svx/svxlink/issues/111),
 open since 2015.
 
-**Status:** working. PTT, COS, frequency setting and audio verified
-end-to-end on a Raspberry Pi 4.
+**Status:** working. PTT, COS, audio and the full `D1M` channel
+configuration — frequency, FM/digital mode, narrow, CTCSS, DCS and power —
+verified end-to-end on a Raspberry Pi 4.
 
 ---
 
@@ -321,49 +322,212 @@ response is a reliable fallback.
 
 ---
 
-## 7. Frequency setting
+## 7. The D1M command — frequency, mode, tone and power
 
-Frequency is **not persistent**. In HRI-200 node mode the radio is a slave —
-the host owns the frequency and sets it on every startup. This is by design;
-WIRES-X does the same.
+`D1M` carries the complete channel configuration. Everything the radio needs
+to know about how to operate is in this one frame.
 
-Captured frame (FTM-400D, 144.00000 MHz):
+**None of it is persistent.** In HRI-200 node mode the radio is a slave —
+the host owns the configuration and sets it on every startup. WIRES-X does
+exactly the same.
+
+**The box only reads `D1M` during initialisation.** Sending a new one mid
+session has no effect. Changing any setting requires closing the port,
+reconnecting and repeating the whole handshake. This is what makes field
+mapping tedious but also completely reliable: one capture per setting, then
+diff.
+
+### Frame layout
 
 ```
-D1M 0043 4000144.00000-000.000000108802300020144.00000+000.00000010887540002
-    ^^^^ length, hex 0x43 = 67-character payload
+D1M 0043 <67-character payload>
+    ^^^^ length field, hex 0x43 = 67
 ```
 
-Payload structure:
+Payload, with every decoded field marked:
 
 ```
-4 000 144.00000 - 000.00000 010880230002 0 144.00000 + 000.00000 010887540002
-      └ VFO A ─┘ └ offset ┘ └─ flags ──┘   └ VFO B ─┘ └ offset ┘ └─ flags ──┘
+ M 000  144.00000  ±  000.00000  N T CCC DDD 000 P 0  144.00000 + 000.00000 010887540002
+ │ │    └─ freq A ┘ │  └offset A┘ │ │  │   │   │  │ │  └────────── VFO B ─────────────┘
+ │ │               │             │ │  │   │   │  │ └ ?
+ │ │               │             │ │  │   │   │  └ power
+ │ │               │             │ │  │   │   └ ? (3 chars)
+ │ │               │             │ │  │   └ DCS code
+ │ │               │             │ │  └ CTCSS tone
+ │ │               │             │ └ tone mode
+ │ │               │             └ narrow
+ │ │               └ shift sign
+ │ └ ? (3 chars)
+ └ operating mode
 ```
 
-The frequency appears twice as plain ASCII in `NNN.NNNNN` format (exactly
-9 characters). Substituting those digits into the captured template is
-sufficient to set an arbitrary frequency — the flag fields can be passed
-through unchanged.
+Payload indices (add 7 for the position in the complete frame):
 
-The device echoes the frame back with its actual state; in the capture the
-requested `-` shift came back as `+`.
+| Index | Width | Field | Values |
+|---|---|---|---|
+| 0 | 1 | Operating mode | `4` FM, `7` digital (request), `5` digital (reply) |
+| 1–3 | 3 | *undecoded* | always `000` |
+| 4–12 | 9 | Frequency A | `NNN.NNNNN` |
+| 13 | 1 | Shift sign | `+` / `-` — normalised by the box |
+| 14–22 | 9 | Offset A | `NNN.NNNNN` |
+| 23 | 1 | Narrow | `0` wide, `1` narrow |
+| 24 | 1 | Tone mode | `1` off, `2` CTCSS, `3` DCS |
+| 25–27 | 3 | CTCSS tone | integer part, truncated |
+| 28–30 | 3 | DCS code | verbatim, three octal digits |
+| 31–33 | 3 | *undecoded* | always `000` |
+| 34 | 1 | Power | `0` high, `1` mid, `2` low |
+| 35 | 1 | *undecoded* | always `0` |
+| 36–66 | 31 | VFO B | same structure, not exercised |
 
-**The flag fields `010880230002` and `010887540002` are not decoded.** They
-likely encode CTCSS tone, power level, channel step and FM/C4FM mode. They
-are believed to be radio-model-specific.
+Everything below was established by capturing one WIRES-X session per
+setting and diffing the resulting frames. In every case exactly one field
+changed.
+
+### Operating mode — index 0
+
+| Value | Meaning |
+|---|---|
+| `4` | FM |
+| `7` | Digital — what the **host sends** |
+| `5` | Digital — what the **box reports back** |
+
+The box normalises `7` to `5` in its reply. As bits:
+
+```
+FM                4 = 0b100
+digital request   7 = 0b111
+digital state     5 = 0b101
+```
+
+Bit 2 is always set, bit 0 looks like the digital flag, and bit 1 appears to
+be a "change mode" request the box clears once applied. A client should send
+`7` and expect `5` back — this is not an error.
+
+### Narrow — index 23
+
+| Value | Meaning |
+|---|---|
+| `0` | Wide |
+| `1` | Narrow |
+
+Echoed unchanged. Observed in digital mode; the FTM-400D also has FM-N, so
+it is presumably the same field there.
+
+### Tone mode — index 24
+
+| Value | Meaning |
+|---|---|
+| `1` | Off |
+| `2` | CTCSS |
+| `3` | DCS |
+
+TSQL, TSQL-R, DCS-R and PAGER are untested and probably occupy further
+values on this same field.
+
+### CTCSS tone — indices 25–27
+
+The **integer part of the tone, truncated**, three digits, zero padded:
+
+```
+ 67.0 -> 067      88.5 -> 088      250.3 -> 250
+ 69.3 -> 069      71.9 -> 071      254.1 -> 254
+```
+
+Truncated, not rounded — `71.9` becomes `071`, not `072`.
+
+This works because all 50 standard CTCSS tones have **unique integer
+parts**, so the decimal carries no information. Convenient, but it also
+means the format cannot express anything outside the standard list.
+
+### DCS code — indices 28–30
+
+The code exactly as written, three octal digits: `023`, `025`, `754`. No
+transformation whatsoever. All 104 standard codes fit.
+
+### Both tone fields persist independently
+
+The CTCSS and DCS fields keep their values regardless of which mode is
+active. Neither is ever cleared — only the mode flag decides which one the
+radio uses.
+
+This is why `023` looked like a constant in every capture taken before DCS
+was tried: it is simply the lowest code in the list, sitting there as a
+default. Likewise `088` appeared constant until CTCSS was exercised, and a
+tone-off capture still reports whichever tone was selected last.
+
+A client should therefore always populate both fields with something valid,
+even when the corresponding mode is not selected.
+
+### Power — index 34
+
+| Value | Level |
+|---|---|
+| `0` | High |
+| `1` | Mid |
+| `2` | Low |
+
+Note the scale is **inverted** — a higher digit means lower power.
+
+Only the VFO A half changes; the equivalent position in the VFO B half was
+constant across all reference captures.
+
+### The reply
+
+The box echoes the frame back with its actual state. Two positions differ
+legitimately:
+
+| Frame position | Payload index | Why |
+|---|---|---|
+| 20 | 13 | Shift sign is normalised — a requested `-` comes back as `+` |
+| 7 | 0 | Digital mode `7` is reported back as `5` |
+
+A difference anywhere else means an undocumented field has been found, and
+is worth capturing.
 
 ### Working template
 
 ```python
-FREQ_TEMPLATE = ("D1M00434000{F}+000.00000010880230002"
-                 "0{F}+000.00000010887540002")
+FREQ_TEMPLATE = ("D1M0043{M}000{F}-000.00000{N}{T}{C}{D}000{P}0"
+                 "{F}+000.00000010887540002")
 
-def build_freq(mhz):
-    f = f"{mhz:09.5f}"          # 145.28750
+MODE_FM, MODE_DIGITAL = "4", "7"
+TONE_OFF, TONE_CTCSS, TONE_DCS = "1", "2", "3"
+POWER_HIGH, POWER_MID, POWER_LOW = "0", "1", "2"
+
+
+def build_d1m(mhz, mode=MODE_FM, narrow=False, power=POWER_LOW,
+              tone_mode=TONE_OFF, ctcss=88.5, dcs=23):
+    """Both tone fields are always populated - the radio keeps them
+    independently of which mode is selected."""
+    f = f"{mhz:09.5f}"                    # 145.28750, exactly 9 characters
     assert len(f) == 9
-    return FREQ_TEMPLATE.replace("{F}", f)
+    cmd = (FREQ_TEMPLATE
+           .replace("{M}", mode)
+           .replace("{F}", f)
+           .replace("{N}", "1" if narrow else "0")
+           .replace("{T}", tone_mode)
+           .replace("{C}", f"{int(ctcss):03d}")   # truncated, not rounded
+           .replace("{D}", f"{int(dcs):03d}")
+           .replace("{P}", power))
+    body = cmd[3:]
+    assert int(body[:4], 16) == len(body) - 4     # length field must agree
+    return cmd
 ```
+
+Verified byte-identical against reference captures for FM, digital, digital
+narrow, all three power levels, seven CTCSS tones and three DCS codes.
+
+### How these fields were found
+
+The method is simple and works for anything still undecoded:
+
+1. Set one thing on the radio manually
+2. Capture a full WIRES-X session with USBPcap or usbmon
+3. Extract the `D1M` frame the host sends
+4. Diff it against a capture that differs only in that one setting
+
+Every field documented above changed exactly one character. Nothing needed
+to be guessed.
 
 ---
 
@@ -446,7 +610,28 @@ needs the full `D1V0000` retry sequence.
 
 Contributions welcome, particularly captures from other radio models.
 
-- `D1M` flag fields (`010880230002`, `010887540002`) — CTCSS, power, step, mode
+### Within `D1M`
+
+| Payload index | Width | Status |
+|---|---|---|
+| 1–3 | 3 | Always `000` in every capture |
+| 31–33 | 3 | Always `000` in every capture |
+| 35 | 1 | Always `0` in every capture |
+| 36–66 | 31 | VFO B half — never exercised |
+
+Likely candidates for the remaining fields: channel step, shift direction,
+AMS/auto mode, and whatever distinguishes the FTM-400D's DN and VW digital
+modes.
+
+### Tone mode values
+
+Only three of the tone mode values at index 24 are known (`1` off, `2`
+CTCSS, `3` DCS). The FTM-400D also offers **TSQL**, **TSQL-R**, **DCS-R**
+and on some models **PAGER**. These almost certainly occupy further values
+on the same field — one capture each would settle it.
+
+### Elsewhere in the protocol
+
 - `D1B00010` — purpose unknown, echoed verbatim
 - Fields after `B<n>` in the poll response — constant in all observations
 - `P010010` — sent once at shutdown; exact effect unverified
@@ -456,12 +641,26 @@ Contributions welcome, particularly captures from other radio models.
 
 ### How to help
 
-Capture a WIRES-X session with USBPcap (Windows) or usbmon (Linux), filter
-on the CDC device, and record: startup, 30 s idle, five keying cycles, five
-squelch cycles. The ASCII framing makes the result readable without tooling.
+The method that decoded everything in section 7 is straightforward and needs
+no special tooling:
 
-Changing one radio setting at a time (power, step, tone) and diffing the
-resulting `D1M` frames should resolve the flag fields quickly.
+1. Change **one** setting on the radio
+2. Capture a full WIRES-X session with USBPcap (Windows) or usbmon (Linux),
+   filtered on the CDC device
+3. Extract the `D1M` frame the host sends
+4. Diff it against a capture that differs only in that one setting
+
+Every field found so far changed exactly one character. Nothing had to be
+guessed. Because the box only reads `D1M` at initialisation, each setting
+needs its own full session — tedious, but unambiguous.
+
+For the general protocol, a capture covering startup, 30 s idle, five keying
+cycles and five squelch cycles is the most useful single artefact. The ASCII
+framing makes it readable in Wireshark without any decoding.
+
+**Captures from other radios are the highest-value contribution.** The `D1M`
+layout above is confirmed on an FTM-400D only. An FTM-100D or DR-1X may use
+different field positions or widths.
 
 ---
 
