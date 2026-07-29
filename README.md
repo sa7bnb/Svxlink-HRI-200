@@ -517,14 +517,6 @@ returning to WIRES-X is just stopping the services.
 To Tobias Blomberg, **SM0SVX**, for [SvxLink](https://www.svxlink.org/) — two
 decades of work, given away, and still maintained.
 
-None of this required patching it. The two pseudo-terminal drivers everything
-here depends on, `PTT_TYPE=PTY` and `SQL_DET=PTY`, were written in 2014 for
-nobody in particular: a generic hook for hardware that did not exist yet. A
-decade later they turned out to be exactly the right shape for a Yaesu
-interface nobody had managed to drive from Linux. That is what good software
-architecture looks like from the outside — someone else's problem solved before
-they had it.
-
 The node is also a normal SvxLink installation in every other respect. The
 modules, the DTMF handling, the EchoLink implementation, the sound files and
 the identification logic are all his; this project only teaches SvxLink how to
