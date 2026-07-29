@@ -3,12 +3,6 @@
 One repository, one script. Fifteen minutes from a blank Raspberry Pi to a node
 that comes up on its own after a power cut.
 
-![The web panel](image.png)
-
-Everything that needs setting after installation is on that page: callsign,
-EchoLink, frequency, power, tone. The readout at the top shows what the radio
-will be set to, and the four lamps below it show what it is actually doing.
-
 **Reference system:** Raspberry Pi 4, Raspberry Pi OS Lite 64-bit (Debian 13
 "Trixie"), SvxLink 24.02 from Debian, HRI-200, FTM-400D.
 
@@ -24,7 +18,6 @@ will be set to, and the four lamps below it show what it is actually doing.
 | Interface | HRI-200 with the internal flash switch in **normal** position |
 | Radio | One the box supports, with its CT-174 cable. FTM-400D verified |
 | Host | Raspberry Pi with a spare USB port and network |
-| Login | A user account on the Pi. `svx` throughout this guide — set it when you flash Raspberry Pi OS |
 | EchoLink | An account with the `-L` suffix, **validated**. Optional, but validation is manual and takes days — start it now |
 | Frequency | See "Before it goes on an antenna" below |
 
@@ -56,8 +49,6 @@ internal flash switch is in programming position and nothing below will work.
 ## 2. Clone and run
 
 ```bash
-ssh svx@<pi-address>
-
 sudo apt install -y git
 git clone https://github.com/sa7bnb/Svxlink-HRI-200.git
 cd Svxlink-HRI-200
@@ -65,13 +56,12 @@ chmod +x install.sh
 sudo ./install.sh
 ```
 
-That is the whole command. Everything else — your callsign, EchoLink, the
-frequency — is set afterwards in the web panel, which means the same image
-works for anybody.
+That is the whole command. Everything else — callsign, EchoLink, frequency,
+power, tone — is set afterwards in the web panel, which is what lets the same
+image work for anybody.
 
-Without a suffix: this is what SvxLink identifies with, not the EchoLink `-L`
-callsign. Leave it out and the node identifies as `MYCALL` until someone fills
-in the panel's Station box, and `--check` flags it until they do.
+Until the callsign is set the node identifies as `MYCALL`, and `--check` flags
+it until someone fills in the panel's Station box.
 
 It starts with a full system upgrade, so on a fresh Raspberry Pi OS image with
 a few dozen pending packages the whole thing can take fifteen minutes. Nothing
@@ -180,22 +170,7 @@ systemctl list-timers apt-daily apt-daily-upgrade --no-pager
 http://<pi-address>:8080/
 ```
 
-Log in with `svx` / `password`, or whatever you set with `WEB_USER` and
-`WEB_PASSWORD`.
-
-> ### Two separate logins
->
-> The panel password is **not** the Pi's login password, even though this guide
-> uses the same pair for both. They live in different places and are changed
-> differently:
->
-> | | Where | Change it with |
-> |---|---|---|
-> | SSH / console | The Linux user account | `passwd` |
-> | Web panel | `/etc/hri200node.conf` | `WEB_PASSWORD=`, then restart the service |
->
-> Setting them the same is convenient and it is what the defaults do. It also
-> means one guess opens both, so if you change one, change the other.
+Log in with `svx` / `password`, or whatever you set.
 
 Start with the **Station** box at the top: your callsign, no suffix. Until that
 is set the node identifies as `MYCALL`, which is not legal to transmit under
@@ -413,30 +388,9 @@ Whoever flashes the image opens the panel, fills in the Station box and the
 EchoLink box, and is running. `--check` reports the callsign as unset until
 they do.
 
-### Passwords in a shared image
-
-Every node flashed from your image starts with the same two passwords: the Pi
-login and the panel. That is fine for a starting point and impossible to avoid
-— an image has to boot with *something* — but it is worth being explicit about
-in whatever you publish alongside it.
-
-The firewall keeps both to the local network, so the exposure is whoever is
-already on the recipient's LAN rather than the whole internet. Still, tell them
-to change both, and consider putting it in the panel's own text so it is hard
-to miss:
-
-```bash
-passwd                                    # the Pi login
-sudo sed -i 's/^WEB_PASSWORD=.*/WEB_PASSWORD=something-else/' /etc/hri200node.conf
-sudo systemctl restart hri200node
-```
-
-If you want a per-image password instead of one shared default:
-
-```bash
-sudo WEB_PASSWORD=$(head -c 9 /dev/urandom | base64 | tr -d '+/=') ./install.sh
-grep WEB_PASSWORD /etc/hri200node.conf     # note it down before imaging
-```
+Consider changing `WEB_PASSWORD` in `/etc/hri200node.conf` per image, or at
+minimum telling recipients to change it — otherwise every node from that image
+shares one password.
 
 The ALSA levels **do** travel with the image, since `alsactl` state is keyed on
 the card name and the HRI-200 always enumerates as `codec`.
@@ -475,19 +429,16 @@ ssh -L 8080:localhost:8080 pi@192.168.1.120
 
 ## About the default password
 
-The installer sets the panel to `svx` / `password` unless you say otherwise,
-and warns about it at the end. On a home LAN behind a router that may be a fair
-trade — but it should be a decision, not an accident. Anyone who can reach port
-8080 can change what your transmitter does, and can read the EchoLink password
-off the wire because the page is unencrypted.
+The installer sets `svx` / `password` unless you say otherwise, and warns about
+it at the end. On a home LAN behind a router that may be a fair trade — but it
+should be a decision, not an accident. Anyone who can reach port 8080 can
+change what your transmitter does, and can read the EchoLink password off the
+wire because it is unencrypted.
 
 ```bash
 sudo sed -i 's/^WEB_PASSWORD=.*/WEB_PASSWORD=something-better/' /etc/hri200node.conf
 sudo systemctl restart hri200node
 ```
-
-The Pi's own login is separate and changed with `passwd`. If you set them the
-same — which the defaults do — remember that changing one leaves the other.
 
 ---
 
@@ -510,7 +461,6 @@ same — which the defaults do — remember that changing one leaves the other.
 | DTMF not decoding | Receive level. `amixer -c codec sset PCM 45` |
 | Radio dead after a power cut | Expected. `[D/X]` + `[GM]` |
 | SSH host key changed | You reinstalled. `ssh-keygen -R <address>` |
-| Panel login rejected | It is not the Pi's password — see `WEB_USER` in `/etc/hri200node.conf` |
 | Unit "masked", `Unknown PCM hri200`, `--check` silent | Zero-length files from an unclean shutdown. Re-run `install.sh` |
 
 ### Never use `>` against the PTY paths
@@ -559,3 +509,23 @@ sudo systemctl daemon-reload
 `svxlink.conf` and `asound.conf` have timestamped backups beside them from the
 installer. The radio and the box are untouched — no firmware was modified, so
 returning to WIRES-X is just stopping the services.
+
+---
+
+## Thanks
+
+To Tobias Blomberg, **SM0SVX**, for [SvxLink](https://www.svxlink.org/) — two
+decades of work, given away, and still maintained.
+
+None of this required patching it. The two pseudo-terminal drivers everything
+here depends on, `PTT_TYPE=PTY` and `SQL_DET=PTY`, were written in 2014 for
+nobody in particular: a generic hook for hardware that did not exist yet. A
+decade later they turned out to be exactly the right shape for a Yaesu
+interface nobody had managed to drive from Linux. That is what good software
+architecture looks like from the outside — someone else's problem solved before
+they had it.
+
+The node is also a normal SvxLink installation in every other respect. The
+modules, the DTMF handling, the EchoLink implementation, the sound files and
+the identification logic are all his; this project only teaches SvxLink how to
+talk to one more piece of hardware.
