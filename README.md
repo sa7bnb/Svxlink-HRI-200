@@ -125,10 +125,6 @@ table of every trap this cost an evening to find.
 | [`PROTOCOL.md`](PROTOCOL.md) | The serial protocol, frame by frame |
 | `hri200node.py` | The node: protocol, SvxLink bridge and web panel in one file |
 | `install.sh` | Sets up everything on a blank Pi |
-| `hri200-parrot.py` | Standalone repeater-in-a-box; useful for isolating faults |
-
-`hri200-parrot.py` needs no SvxLink at all. Run it first when something is
-wrong — if the box and radio do not work there, nothing above them will.
 
 The node has three modes besides running:
 
