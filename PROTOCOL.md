@@ -11,7 +11,12 @@ open since 2015.
 
 **Status:** working. PTT, COS, audio and the full `D1M` channel
 configuration — frequency, FM/digital mode, narrow, CTCSS, DCS and power —
-verified end-to-end on a Raspberry Pi 4.
+verified end-to-end on a Raspberry Pi 4, and running continuously as a
+SvxLink node since.
+
+Two radios have been driven: an **FTM-400DEXP**, which identifies itself and
+takes its channel configuration from the host, and an **FT-7800R**, which does
+not identify itself at all and is tuned by hand. Both work; see section 4.
 
 ---
 
@@ -23,6 +28,7 @@ Everything below was observed on this configuration:
 |---|---|
 | Interface | Yaesu HRI-200, firmware build timestamp **2015-04-13 13:38:24** |
 | Radio | Yaesu **FTM-400DEXP**, reported as `FTM-400DEXP  B3 Ver1.90020141217` |
+| Second radio | Yaesu **FT-7800R** — analogue, does not identify itself |
 | Radio mode | **Analogue FM** (no C4FM tested) |
 | Host | Raspberry Pi 4 |
 | OS | **Raspberry Pi OS Lite 64-bit**, Debian 13 (Trixie), kernel 6.12, arm64 |
@@ -79,14 +85,24 @@ amixer -c codec sset Speaker 47
 sudo alsactl store    # persist across reboots
 ```
 
-`PCM` (which is the **capture** control despite the name) was left at its
-default of 31/55. That gave 0.39 peak amplitude on open-squelch noise,
-measured with:
+`PCM` (which is the **capture** control despite the name) started at its
+default of 31/55, giving 0.39 peak amplitude on open-squelch noise. That was
+enough for audio to pass but **not enough for reliable DTMF decoding**: at 31
+the decoder dropped digits, and at 45 (+14 dB) a ten-digit sequence came
+through without error. Speech then measured RMS -21.8 dBFS with peaks at
+-5.7 dBFS, which is a sensible working point.
+
+Measure rather than guess, and **speak into the handheld during the
+recording** — measuring the noise floor says nothing about where speech lands:
 
 ```bash
 arecord -D plughw:CARD=codec,DEV=0 -f S16_LE -r 48000 -c 1 -d 5 /tmp/rx.wav
-sox /tmp/rx.wav -n stat
+sox /tmp/rx.wav -n stats
 ```
+
+Use `stats`, not `stat`. The older `stat` reports a `Midline amplitude` that
+looks like a DC offset and is not one; `stats` gives the real `DC offset`,
+which measured -0.000017, i.e. none.
 
 `Mic` is a playback-side sidetone control, muted by default, and was left
 alone.
@@ -95,15 +111,59 @@ Resulting mixer state:
 
 | Control | Direction | Value | Notes |
 |---|---|---|---|
-| `PCM` | capture | 31/55 (0 dB) | default, unchanged — 0.39 peak on noise |
+| `PCM` | capture | 45/55 (+14 dB) | raised from 31 — 31 was too low for DTMF |
 | `Speaker` | playback | 47/47 (0 dB) | raised from 27 (-20 dB) |
 | `Mic` | playback | muted | default, unchanged |
 | `Bass Boost` | playback | off | changed from on |
 
-Note that `Speaker` ended up at maximum. Levels were set by increasing until
-speech sounded correct, so there may be no headroom left — verify with a
-clean 1 kHz tone, where overdeviation is far easier to hear than on speech,
-and back off if it sounds rough.
+Note that `Speaker` ended up at maximum for this radio. Levels were set by
+increasing until speech sounded correct, so there may be no headroom left —
+verify with a clean 1 kHz tone, where overdeviation is far easier to hear than
+on speech, and back off if it sounds rough.
+
+**Levels are radio-specific, and by more than one might expect.** Measured on
+the same box and the same cable:
+
+| | `Speaker` (TX) | `PCM` (RX) |
+|---|---|---|
+| FTM-400DEXP | 47/47 | 45/55 |
+| FT-7800R | 26/47 | 40/55 |
+
+That is roughly 21 dB less drive into the FT-7800R for comparable deviation.
+Do not carry a working setting from one radio to another.
+
+### The squelch-open transient
+
+Every time the radio unmutes its AF stage the capture stream takes a hard
+step. It is worth documenting because software that watches for clipping —
+SvxLink's distortion detector, for one — will flag it, and the obvious
+response of turning the level down is exactly wrong.
+
+Measured on a ten-second recording containing one squelch opening:
+
+```
+signal on the noise floor      about +/-100
+falls to full scale            in 8 samples, 170 us
+recovers                       smooth monotonic exponential
+time constant                  61 ms
+implied high-pass corner       2.6 Hz
+speech in the same recording   peaks 3000-10000, RMS -30 dBFS
+```
+
+A clean exponential decay of that shape is a DC step through an AC-coupled
+path, not a digital glitch: a dropped USB frame gives isolated samples with no
+structure, and a genuinely overdriven input clips on the waveform peaks rather
+than once at the transition.
+
+Two consequences. The transient **saturates regardless of gain** — raising
+`PCM` by 14 dB left the count of full-scale samples at exactly 2 in 240 000,
+because something already at the rail cannot go further. And it is harmless:
+it lands before the useful audio, and DTMF, squelch and relayed speech were
+all unaffected.
+
+If it must be suppressed, delay acting on the squelch-open indication by about
+100 ms so the downstream audio gate opens after the thump has decayed. The
+cost is a clipped first syllable, which is usually the worse trade.
 
 The radio must be in **HRI-200 node mode**: power on while holding
 `[D/X]` + `[GM]`. The display then shows `HRI-200`. Holding `[D/X]` alone
@@ -124,10 +184,16 @@ from the wire protocol. No behavioural differences are known.
 by the HRI-200's own MCU and should behave identically regardless of which
 radio is attached.
 
-`D1M` (frequency setting) was captured from an FTM-400D session and contains
-flag fields that are **not decoded**. Other radios (FTM-100D, DR-1X, …) may
-require different values or a different field layout. Treat the `D1M`
-template as FTM-400D-specific until confirmed otherwise.
+`D1M` is decoded field by field in section 7 — but against an FTM-400D, and
+it only applies to radios that identify themselves at all. An **FT-7800R**
+never answers `D1V0000`, so it is never sent `D1M`; it works as a node radio
+with its frequency set by hand. See section 4.
+
+So the layout remains verified against exactly one model. Treat it as
+provisional for anything else (FTM-100D, DR-1X, …).
+
+Audio levels **are** radio-specific regardless of controllability — see
+section 1.
 
 Reports from other radio models are welcome — see section 9.
 
@@ -244,17 +310,56 @@ first character, then decode pairwise.
 This is a query, not authentication — no prior knowledge of the serial
 number is required.
 
-### `D1V0000` — radio detection needs retries
+### `D1V0000` — radio detection needs retries, and may never succeed
 
-The device needs **several seconds** to detect the attached radio after
-startup. In the reference capture, WIRES-X queried at t=1.0 s and t=2.1 s
-with no reply, and only received a response at t=4.1 s on the third attempt.
+A controllable radio needs **several seconds** to be detected after startup.
+In the reference capture, WIRES-X queried at t=1.0 s and t=2.1 s with no reply,
+and only received a response at t=4.1 s on the third attempt. Reproduced on a
+second unit, which also answered on the third attempt.
 
 Poll `D1V0000` repeatedly, roughly every 1.2 s for up to ~10 s, keeping the
 `P` poll running in between. A single query with a 3 s timeout fails
 intermittently.
 
 Response format: `D1V0020` followed by the radio identification string.
+
+#### A plain analogue radio never answers
+
+This is normal, not a fault. A WIRES-X capture with an **FT-7800R** attached:
+
+```
+  0.000  ->  M00                     handshake, acknowledged
+  0.013  ->  R6423                   device info, answered
+  1.041  ->  D1V0000                 no reply
+  2.041  ->  D1V0000                 no reply
+    ...                              37 attempts over 54 s
+ 55.119  ->  D1V0000                 no reply
+```
+
+Meanwhile `P010000` was polled 56 times and answered 56 times, so the box and
+the link were healthy throughout. **WIRES-X never sent `D1M`** — with no radio
+identified there is nothing to configure, so it simply kept asking.
+
+The distinction is between two classes of radio:
+
+| | Answers `D1V` | Frequency, power, tone | PTT, squelch, audio |
+|---|---|---|---|
+| FTM-400D, FTM-100D … | yes | set by the host with `D1M` | via the data connector |
+| FT-7800R and similar | no | set on the radio | via the data connector |
+
+PTT and squelch travel over the data connector's own lines and are reported
+through the poll, so they work either way. Only the channel configuration
+depends on the radio being controllable.
+
+**A client must therefore treat a detection failure as informational, not
+fatal.** Refusing to start leaves a perfectly usable node dead: the operator
+tunes the radio by hand and everything else behaves normally. Skip `D1M` when
+nothing identified — sending channel settings to a radio that cannot receive
+them achieves nothing.
+
+The same silence has one other cause worth reporting to the user: a
+controllable radio in the wrong mode. On an FTM-400D, `[D/X]` alone gives PDN
+mode, which looks similar and does not answer `D1V` either.
 
 ---
 
@@ -567,9 +672,11 @@ while True:
 WIRES-X polls at roughly 1 Hz. That is enough to hold PTT, but it puts up to
 one second of latency on squelch detection when relying on the `B` response.
 
-Polling at 4–5 Hz is comfortable and gives better COS latency. Regardless of
-rate, **send the poll immediately when PTT changes state** rather than
-waiting for the next scheduled one.
+Polling at 4–5 Hz is comfortable and gives better COS latency. 5 Hz has since
+run continuously in service without the device objecting. Regardless of rate,
+**send the poll immediately when PTT changes state** rather than waiting for
+the next scheduled one — with that in place, measured PTT latency from request
+to frame on the wire is under a millisecond.
 
 ### State to track
 
@@ -578,7 +685,7 @@ waiting for the next scheduled one.
 | PTT asserted | your own — determines which poll command you send |
 | Squelch open | `B<n>` digit, or `D1P` bit `0x10` |
 | Transmitting | `D1P` bit `0x20` — useful as confirmation |
-| Radio present | `D1V0000` responded during connect |
+| Radio controllable | `D1V0000` responded during connect. **Not** the same as the radio being present or working — see section 4 |
 
 The `D1P` pushes arrive unsolicited and are lower latency than the poll
 response. Use them as the primary squelch source and the `B` digit as a
@@ -603,6 +710,29 @@ Set PTT off, send one final `P010000`, and optionally `P010010` — which
 WIRES-X sends once when it exits. Its exact effect is unverified; sending it
 appears to make the device release the radio, which means the next session
 needs the full `D1V0000` retry sequence.
+
+### Known implementations
+
+Two exist, both in this repository, and between them they exercise everything
+documented above:
+
+| | |
+|---|---|
+| `hri200-parrot.py` | A standalone repeater-in-a-box. No dependencies beyond pySerial. The shortest complete example of the protocol. |
+| `hri200node.py` | A SvxLink node. Bridges PTT and squelch to SvxLink's pseudo-terminal drivers and serves a web configuration panel. |
+
+The SvxLink integration needs no patches to SvxLink, because it already has
+PTY drivers for both directions: `PTT_TYPE=PTY` makes it write `T` and `R` to
+a pty for transmit control, and `SQL_DET=PTY` makes it read `O` and `Z` for
+squelch. Translating those to and from the frames above is the whole job.
+
+One implementation note that only shows up in practice: **the box reports your
+own transmission back as a squelch event**, `D1P` bit `0x10` setting while bit
+`0x20` is also set. Any client that relays squelch onwards must force it closed
+while PTT is asserted and for a few hundred milliseconds afterwards, then flush
+the serial input buffer. Without that the node keys itself in a loop. 400 ms is
+comfortable; the box's own report clears within about 30 ms of the transmitter
+dropping.
 
 ---
 
@@ -662,6 +792,10 @@ framing makes it readable in Wireshark without any decoding.
 layout above is confirmed on an FTM-400D only. An FTM-100D or DR-1X may use
 different field positions or widths.
 
+An FT-7800R has been tested and does not exercise `D1M` at all — it never
+identifies itself, so the host never sends one. That answers a different
+question, and a useful one, but it does not validate the field layout.
+
 ---
 
 ## 10. Programming mode
@@ -706,7 +840,8 @@ No Yaesu firmware, software or copyrighted material is redistributed here.
 
 ---
 
-*Serial numbers have been replaced with placeholders. Verified against one
-HRI-200 unit with one FTM-400DEXP in analogue FM mode — your results may
-vary, and reports of differences are the most useful contribution you can
-make.*
+*Serial numbers have been replaced with placeholders. Verified against two
+HRI-200 units, with an FTM-400DEXP and an FT-7800R in analogue FM mode, and
+running continuously as a SvxLink node since. Your results may vary, and
+reports of differences — especially from other radio models — are the most
+useful contribution you can make.*
