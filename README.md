@@ -2,7 +2,7 @@
 
 One repository, one script. From a blank Raspberry Pi to a working SvxLink node.
 
-
+![The web panel](image.png)
 
 Everything you need to set afterwards is on that page: callsign, EchoLink,
 frequency, power and tone. The readout shows what the radio will be set to; the
