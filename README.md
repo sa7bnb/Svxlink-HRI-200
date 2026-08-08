@@ -46,10 +46,33 @@ there.
 ## What you need
 
 - **HRI-200** with the internal flash switch in its **normal** position
-- A **radio** the box supports, with its CT-174 cable. FTM-400D verified
+- A **radio** the box supports, with its CT-174 cable. FTM-400D and FT-7800R
+  verified
 - A **Raspberry Pi** with a spare USB port and network
 - An **EchoLink account with the `-L` suffix**, validated. Optional, but
   validation is manual and takes days, so start it now
+
+---
+
+## Two kinds of radio
+
+**Radios that identify themselves** — an FTM-400D and similar — are tuned from
+the web panel. The host owns the frequency, power and tone, and sets them at
+every startup.
+
+**Plain analogue radios** — an FT-7800R, for instance — never answer the
+identification query, so the panel cannot tune them. Set the frequency on the
+radio itself. Everything else works normally: PTT, squelch, audio, DTMF,
+EchoLink. The panel detects this, says so, and greys out the controls that
+would have no effect.
+
+Neither is better; the second is just less automatic.
+
+Tell the panel which you have — the **Radio** box has a button per model. It
+loads that radio's audio levels, and for one known not to identify itself it
+also skips most of the detection wait, cutting about seven seconds off every
+startup. The radio is still asked, briefly, so swapping one in later corrects
+itself. Choose **Other** if yours is not listed and let detection decide.
 
 ---
 
@@ -59,11 +82,11 @@ there.
 to section 3 — but do read the radio-mode note below, because that part is not
 something an image can do for you.*
 
-
 Power the FTM-400D on **while holding `[D/X]` + `[GM]`** until the display
 reads `HRI-200`, then plug the box into the Pi.
 
-`[D/X]` alone gives PDN mode. It looks similar and does not work.
+`[D/X]` alone gives PDN mode. It looks similar and does not work. An analogue
+radio has no such mode and needs nothing done to it.
 
 > **This does not survive a power cut.** Everything else starts itself; the
 > radio's mode does not.
@@ -108,9 +131,18 @@ http://<pi-address>:8080/
 **Station** box first: your callsign, no suffix. Until it is set the node
 identifies as `MYCALL`, which is not legal to transmit under anywhere.
 
+**Radio**: pick your model. This loads its audio levels. If the panel reports
+that the radio does not identify itself, that is expected on an analogue set,
+and the frequency, power and tone controls below are inert — tune the radio.
+
 Then **EchoLink**: callsign with `-L`, password, sysop name, location. The `-L`
 account is registered separately from your personal callsign and has its own
 password.
+
+Keep the frequency in the location string — `[Svx] 434.500, Yourtown` — because
+that is what other operators read in the EchoLink directory to know where to
+call you. Change frequency later and this does not follow automatically;
+`--check` will tell you if the two disagree.
 
 **Save and apply.** EchoLink changes restart SvxLink, so allow 25 seconds.
 
@@ -215,8 +247,9 @@ sudo systemctl restart hri200node
 ## Day to day
 
 Radio settings — frequency, power, mode, tone — apply in about four seconds
-without restarting anything. EchoLink settings restart SvxLink, roughly 25
-seconds off the air.
+without restarting anything, on a radio that can be tuned remotely. On an
+analogue set they are ignored and the panel says so. EchoLink settings restart
+SvxLink, roughly 25 seconds off the air.
 
 Everything is also editable by hand in `/etc/hri200node.conf`, followed by
 `sudo systemctl restart hri200node`.
@@ -237,18 +270,46 @@ journalctl -u hri200node -f      # the node and the panel
 sudo tail -f /var/log/svxlink    # SvxLink logs to a FILE, not the journal
 ```
 
-**Audio levels**, if the card was not plugged in when you installed:
+### Audio levels
+
+The panel's **Audio** box has two sliders, applied on save without restarting
+anything. Picking a radio loads its starting point.
+
+| | Transmit | Receive | Tunable from the panel |
+|---|---|---|---|
+| FTM-400D | 47 | 45 | yes |
+| FT-7800R | 26 | 40 | no — set on the radio |
+| Other | unchanged | unchanged | detected |
+
+Presets are a place to start, not a specification. The gap between those two is
+about 21 dB of drive on the same box and cable, which is not something you
+would guess at — so measure rather than assume. Levels are stored once, not per
+radio, so swapping sets means picking the button again.
+
+To measure, stop the services — they hold the card — and **speak into the
+handheld during the recording**:
+
+```bash
+sudo systemctl stop hri200node svxlink
+arecord -D plughw:CARD=codec,DEV=0 -f S16_LE -r 48000 -c 1 -d 5 /tmp/rx.wav
+sox /tmp/rx.wav -n stats
+sudo systemctl start svxlink hri200node
+```
+
+Aim for `RMS lev dB` around −18 to −22 and `Pk lev dB` around −6 to −3. Too low
+and DTMF stops decoding; too high and transmit audio distorts.
+
+From the shell instead:
 
 ```bash
 sudo amixer -c codec sset 'Bass Boost' off
-sudo amixer -c codec sset Speaker 47      # transmit
-sudo amixer -c codec sset PCM 45          # receive
+sudo amixer -c codec sset Speaker 47      # transmit, out to the radio
+sudo amixer -c codec sset PCM 45          # receive, in from the radio
 sudo alsactl store
 ```
 
-The names do not match their functions: `Speaker` is the level **out** to the
-radio, `PCM` the level **in**. The factory `Speaker 27` is −20 dB and far too
-quiet.
+The control names do not describe their functions. The factory `Speaker 27` is
+−20 dB and far too quiet.
 
 ---
 
@@ -321,19 +382,39 @@ The ALSA levels do travel with the image.
 
 ---
 
+## About the default password
+
+The installer sets the panel to `svx` / `password` unless you say otherwise,
+and warns about it at the end. On a home LAN behind a router that may be a fair
+trade — but it should be a decision, not an accident.
+
+```bash
+sudo sed -i 's/^WEB_PASSWORD=.*/WEB_PASSWORD=something-better/' /etc/hri200node.conf
+sudo systemctl restart hri200node
+```
+
+The Pi's own login is separate and changed with `passwd`. If you set them the
+same — which the defaults do — remember that changing one leaves the other.
+
+---
+
 ## Troubleshooting
 
 | Symptom | Cause |
 |---|---|
 | `journalctl -u svxlink` looks empty | Wrong log. Use `/var/log/svxlink` |
+| `Internal Server Error` on the panel | `journalctl -u hri200node -n 30` has the traceback |
 | Panel: `Cannot write ...: Permission denied` | Old `hri200node.py` — see Updating |
 | Edits do nothing | Editing the clone, not `/usr/local/bin` |
 | Panel login rejected | Not the Pi's password — see `WEB_USER` in `/etc/hri200node.conf` |
+| Panel says the radio does not identify itself | Normal for a plain analogue set — tune it by hand. On an FTM-400D it means PDN mode instead of HRI-200 mode |
+| Frequency and power do nothing | Same: the radio cannot be tuned remotely |
+| `location agrees with the operating frequency` fails | You changed frequency but not the EchoLink location string |
 | `No response to M00` | Flash switch in programming position, or another program holds the port |
-| `Radio does not respond` | PDN mode instead of HRI-200 mode |
 | `svxlink` SEGV, restart loop | A regular file at a PTY path. `sudo rm -f /dev/shm/hri200_*` |
 | Node transmits silence | Sound files missing, or the `en_US` symlink absent |
 | Transmit barely audible | `Speaker` still at the factory 27 |
+| Transmit distorted | `Speaker` too high — an FT-7800R wants about 26, not 47 |
 | `INCORRECT PASSWORD` | The `-L` account has its own password; changes take minutes to propagate |
 | `DNS query failed` at boot | Drop-in missing from `/etc/systemd/system/svxlink.service.d/` |
 | Slow start with no internet | Expected: 30 s for DNS, then it starts anyway |
